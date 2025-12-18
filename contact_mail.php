@@ -1,27 +1,28 @@
 <?php
 header('Content-Type: application/json; charset=utf-8');
 
-// Allow only POST
+// Only allow POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo json_encode(['status' => 'error', 'message' => 'Method not allowed.']);
     exit;
 }
 
-// Helper: safely retrieve POST value
-function get_post($key) {
-    if (!isset($_POST[$key])) return '';
-    $v = $_POST[$key];
-    // Remove any CR/LF to avoid header injection
+// Helper to safely get POST values
+function get_post($k) {
+    if (!isset($_POST[$k])) return '';
+    $v = $_POST[$k];
+    $v = trim($v);
+    // Prevent header injection
     $v = preg_replace('/[\r\n]+/', ' ', $v);
-    // Strip tags and trim
-    return trim(strip_tags($v));
+    return strip_tags($v);
 }
 
 $name = get_post('name');
 $phone = get_post('phone');
 $email = get_post('email');
 $message = get_post('message');
+$subject = get_post('sub');
 
 if (empty($name) || empty($phone) || empty($message)) {
     http_response_code(400);
@@ -29,32 +30,94 @@ if (empty($name) || empty($phone) || empty($message)) {
     exit;
 }
 
-// Validate email if provided
+// Validate/sanitize email
 $replyTo = '';
-if (!empty($email) && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    $replyTo = $email;
+if (!empty($email)) {
+    $email = filter_var($email, FILTER_SANITIZE_EMAIL);
+    if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $replyTo = $email;
+    } else {
+        $email = '';
+    }
 }
 
-// Compose email
+if (empty($subject)) {
+    $subject = 'Website Inquiry: ' . ($name ?: 'Contact form');
+}
+
+// Build HTML and plain text bodies (mirror supplied example)
+$htmlBody = '<html><body>';
+$htmlBody .= '<p><strong>New contact form submission</strong></p>';
+$htmlBody .= '<table cellpadding="6" style="border-collapse:collapse;">';
+$htmlBody .= '<tr><th align="left">Name</th><td>' . htmlspecialchars($name) . '</td></tr>';
+$htmlBody .= '<tr><th align="left">Phone</th><td>' . htmlspecialchars($phone) . '</td></tr>';
+$htmlBody .= '<tr><th align="left">Email</th><td>' . ($email ? htmlspecialchars($email) : 'N/A') . '</td></tr>';
+$htmlBody .= '<tr><th align="left">Subject</th><td>' . htmlspecialchars($subject) . '</td></tr>';
+$htmlBody .= '<tr><th align="left">Message</th><td>' . nl2br(htmlspecialchars($message)) . '</td></tr>';
+$htmlBody .= '</table>';
+$htmlBody .= '</body></html>';
+
+$plainBody = "New contact form submission\n\n";
+$plainBody .= "Name: {$name}\n";
+$plainBody .= "Phone: {$phone}\n";
+$plainBody .= "Email: " . ($email ?: 'N/A') . "\n";
+$plainBody .= "Subject: {$subject}\n\n";
+$plainBody .= "Message:\n{$message}\n";
+
+// Recipient
 $to = 'info@amglasses.in';
-$subject = 'Website Inquiry: ' . ($name ?: 'Contact form');
-$body  = "You received a new message from your website contact form:\n\n";
-$body .= "Name: {$name}\n";
-$body .= "Phone: {$phone}\n";
-$body .= "Email: " . ($email ?: 'N/A') . "\n\n";
-$body .= "Message:\n{$message}\n";
 
-$headers = [];
-$headers[] = 'From: noreply@' . ($_SERVER['SERVER_NAME'] ?? 'localhost');
-if ($replyTo) {
-    $headers[] = 'Reply-To: ' . $replyTo;
-}
-$headers[] = 'X-Mailer: PHP/' . phpversion();
+// Default headers for fallback mail()
+$serverName = isset($_SERVER['SERVER_NAME']) ? preg_replace('/[^a-zA-Z0-9.\\-]/', '', $_SERVER['SERVER_NAME']) : 'localhost';
+$fromAddress = 'noreply@' . $serverName;
+$mailHeaders = [];
+$mailHeaders[] = 'From: ' . $fromAddress;
+if ($replyTo) $mailHeaders[] = 'Reply-To: ' . $replyTo;
+$mailHeaders[] = 'MIME-Version: 1.0';
+$mailHeaders[] = 'Content-type: text/html; charset=utf-8';
+$mailHeaders[] = 'X-Mailer: PHP/' . phpversion();
 
 $ok = false;
 try {
-    // Use mail(); hosting must support it. If mail() is disabled, this will return false.
-    $ok = mail($to, $subject, $body, implode("\r\n", $headers));
+    $sent = false;
+    $vendor = __DIR__ . '/vendor/autoload.php';
+    if (file_exists($vendor)) {
+        require_once $vendor;
+        // optional smtp config
+        if (file_exists(__DIR__ . '/smtp_config.php')) {
+            require_once __DIR__ . '/smtp_config.php';
+        }
+        try {
+            $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+            $mail->isSMTP();
+            $mail->Host = defined('SMTP_HOST') ? SMTP_HOST : 'localhost';
+            $mail->SMTPAuth = defined('SMTP_USER') && defined('SMTP_PASS');
+            if (defined('SMTP_USER')) $mail->Username = SMTP_USER;
+            if (defined('SMTP_PASS')) $mail->Password = SMTP_PASS;
+            $mail->SMTPSecure = defined('SMTP_SECURE') ? SMTP_SECURE : '';
+            $mail->Port = defined('SMTP_PORT') ? SMTP_PORT : 25;
+            $fromEmail = defined('SMTP_FROM_EMAIL') ? SMTP_FROM_EMAIL : $fromAddress;
+            $fromName = defined('SMTP_FROM_NAME') ? SMTP_FROM_NAME : 'Website Contact';
+            $mail->setFrom($fromEmail, $fromName);
+            if ($replyTo) $mail->addReplyTo($replyTo);
+            $mail->addAddress($to);
+            $mail->Subject = $subject;
+            $mail->isHTML(true);
+            $mail->Body = $htmlBody;
+            $mail->AltBody = $plainBody;
+            $mail->CharSet = 'UTF-8';
+            $sent = $mail->send();
+        } catch (Exception $e) {
+            $sent = false;
+        }
+    }
+
+    if (!$sent) {
+        // fallback to PHP mail() with HTML body
+        $sent = mail($to, $subject, $htmlBody, implode("\r\n", $mailHeaders));
+    }
+
+    $ok = (bool)$sent;
 } catch (Throwable $e) {
     $ok = false;
 }
@@ -64,54 +127,12 @@ if ($ok) {
     exit;
 }
 
-// Fallback: try to log the message if mail() fails
-$logLine = date('Y-m-d H:i:s') . "\t" . str_replace("\n", ' / ', $body) . "\n";
+// Log failure for debugging
+$logLine = date('Y-m-d H:i:s') . "\t" . str_replace("\n", ' / ', $plainBody) . "\n";
 @file_put_contents(__DIR__ . '/contact_log.txt', $logLine, FILE_APPEND | LOCK_EX);
 
 http_response_code(500);
 echo json_encode(['status' => 'error', 'message' => 'Failed to send message. Please try again later.']);
 exit;
-<?php
-// Response header to return JSON
-header('Content-Type: application/json');
 
-// Check if it is a POST request
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Get and sanitize form fields
-    $name = isset($_POST['name']) ? strip_tags(trim($_POST['name'])) : '';
-    $phone = isset($_POST['phone']) ? strip_tags(trim($_POST['phone'])) : '';
-    $email = isset($_POST['email']) ? filter_var(trim($_POST['email']), FILTER_SANITIZE_EMAIL) : '';
-    $message = isset($_POST['message']) ? strip_tags(trim($_POST['message'])) : '';
 
-    // Simple Validation
-    if (empty($name) || empty($phone) || empty($message)) {
-        echo json_encode(['status' => 'error', 'message' => 'Please fill in all required fields (Name, Phone, Message).']);
-        exit;
-    }
-
-    // Email Configuration
-    $to = 'info@amglass.in'; // Target email address
-    $subject = "New Contact Query from $name";
-    
-    // Email Body
-    $email_content = "Name: $name\n";
-    $email_content .= "Phone: $phone\n";
-    $email_content .= "Email: $email\n\n";
-    $email_content .= "Message:\n$message\n";
-
-    // Email Headers
-    $headers = "From: $name <$email>"; // Note: Some hosts require From to be a valid domain email, reply-to can be the user.
-    // Ideally: $headers = "From: no-reply@yourdomain.com\r\n" . "Reply-To: $email\r\n";
-    // Keeping it simple for standard PHP mail behavior.
-
-    // Send Email
-    if (mail($to, $subject, $email_content, $headers)) {
-        echo json_encode(['status' => 'success', 'message' => 'Thank you! Your message has been sent successfully.']);
-    } else {
-        echo json_encode(['status' => 'error', 'message' => 'Oops! Something went wrong and we couldn\'t send your message.']);
-    }
-} else {
-    // Not a POST request
-    echo json_encode(['status' => 'error', 'message' => 'Invalid request method.']);
-}
-?>
