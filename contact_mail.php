@@ -23,6 +23,7 @@ $phone = get_post('phone');
 $email = get_post('email');
 $message = get_post('message');
 $subject = get_post('sub');
+$product = get_post('product');
 
 if (empty($name) || empty($phone) || empty($message)) {
     http_response_code(400);
@@ -54,6 +55,7 @@ $htmlBody .= '<tr><th align="left">Phone</th><td>' . htmlspecialchars($phone) . 
 $htmlBody .= '<tr><th align="left">Email</th><td>' . ($email ? htmlspecialchars($email) : 'N/A') . '</td></tr>';
 $htmlBody .= '<tr><th align="left">Subject</th><td>' . htmlspecialchars($subject) . '</td></tr>';
 $htmlBody .= '<tr><th align="left">Message</th><td>' . nl2br(htmlspecialchars($message)) . '</td></tr>';
+$htmlBody .= '<tr><th align="left">Product</th><td>' . ($product ? htmlspecialchars($product) : 'N/A') . '</td></tr>';
 $htmlBody .= '</table>';
 $htmlBody .= '</body></html>';
 
@@ -63,6 +65,7 @@ $plainBody .= "Phone: {$phone}\n";
 $plainBody .= "Email: " . ($email ?: 'N/A') . "\n";
 $plainBody .= "Subject: {$subject}\n\n";
 $plainBody .= "Message:\n{$message}\n";
+$plainBody .= "Product: " . ($product ?: 'N/A') . "\n";
 
 // Recipient
 $to = 'info@amglasses.in';
